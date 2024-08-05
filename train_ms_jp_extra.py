@@ -550,7 +550,7 @@ def run():
     if not args.no_progress_bar:
         pbar = tqdm(
             total=(global_step + diff) // gradient_accumulation_steps,
-            initial=global_step // gradient_accumulation_steps,
+            initial=global_step,
             smoothing=0.05,
             file=SAFE_STDOUT,
         )
