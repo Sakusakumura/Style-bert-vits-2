@@ -158,7 +158,7 @@ def preprocess(
 
     # 各話者ごとに発話リストを処理
     for spk, utts in spk_utt_map.items():
-        if val_per_lang == 0:
+        if val_per_lang == 0 or len(utts) * 0.05 < val_per_lang:
             train_list.extend(utts)
             continue
         # ランダムにval_per_lang個のインデックスを選択

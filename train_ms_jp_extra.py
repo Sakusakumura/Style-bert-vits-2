@@ -539,14 +539,17 @@ def run():
     scaler = GradScaler(enabled=hps.train.bf16_run)
     logger.info("Start training.")
 
+    # add: gradient_accumulation_steps
+    gradient_accumulation_steps = 3
+
     diff = abs(
         epoch_str * len(train_loader) - (hps.train.epochs + 1) * len(train_loader)
     )
     pbar = None
     if not args.no_progress_bar:
         pbar = tqdm(
-            total=global_step + diff,
-            initial=global_step,
+            total=(global_step + diff) // gradient_accumulation_steps,
+            initial=global_step // gradient_accumulation_steps,
             smoothing=0.05,
             file=SAFE_STDOUT,
         )
@@ -568,6 +571,7 @@ def run():
                 [writer, writer_eval],
                 pbar,
                 initial_step,
+                gradient_accumulation_steps,
             )
         else:
             train_and_evaluate(
@@ -584,6 +588,7 @@ def run():
                 None,
                 pbar,
                 initial_step,
+                gradient_accumulation_steps
             )
         scheduler_g.step()
         scheduler_d.step()
@@ -675,6 +680,7 @@ def train_and_evaluate(
     writers,
     pbar: tqdm,
     initial_step: int,
+    gradient_accumulation_steps: int = 1,
 ):
     net_g, net_d, net_dur_disc, net_wd, wl = nets
     optim_g, optim_d, optim_dur_disc, optim_wd = optims
@@ -705,6 +711,7 @@ def train_and_evaluate(
         bert,
         style_vec,
     ) in enumerate(train_loader):
+        is_accumulating = (batch_idx + 1) % gradient_accumulation_steps != 0
         if net_g.module.use_noise_scaled_mas:
             current_mas_noise_scale = (
                 net_g.module.mas_noise_scale_initial
@@ -780,90 +787,91 @@ def train_and_evaluate(
                 loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
                     y_d_hat_r, y_d_hat_g
                 )
-                loss_disc_all = loss_disc
+                loss_disc_all = loss_disc / gradient_accumulation_steps
+            # Duration discriminator
             if net_dur_disc is not None:
-                y_dur_hat_r, y_dur_hat_g = net_dur_disc(
-                    hidden_x.detach(),
-                    x_mask.detach(),
-                    logw_.detach(),
-                    logw.detach(),
-                    g.detach(),
-                )
+                y_dur_hat_r, y_dur_hat_g = net_dur_disc(hidden_x.detach(), x_mask.detach(), logw_.detach(),
+                                                        logw.detach(), g.detach())
                 with autocast(enabled=hps.train.bf16_run, dtype=torch.bfloat16):
-                    # TODO: I think need to mean using the mask, but for now, just mean all
-                    (
-                        loss_dur_disc,
-                        losses_dur_disc_r,
-                        losses_dur_disc_g,
-                    ) = discriminator_loss(y_dur_hat_r, y_dur_hat_g)
-                    loss_dur_disc_all = loss_dur_disc
-                optim_dur_disc.zero_grad()
-                scaler.scale(loss_dur_disc_all).backward()
-                scaler.unscale_(optim_dur_disc)
-                # torch.nn.utils.clip_grad_norm_(
-                # parameters=net_dur_disc.parameters(), max_norm=5
-                # )
-                grad_norm_dur = commons.clip_grad_value_(
-                    net_dur_disc.parameters(), None
-                )
-                scaler.step(optim_dur_disc)
+                    loss_dur_disc, losses_dur_disc_r, losses_dur_disc_g = discriminator_loss(y_dur_hat_r,
+                                                                                             y_dur_hat_g)
+                    loss_dur_disc_all = loss_dur_disc / gradient_accumulation_steps
+
+            # WaveNet discriminator
             if net_wd is not None:
-                # logger.debug(f"y.shape: {y.shape}, y_hat.shape: {y_hat.shape}")
-                # shape: (batch, 1, time)
                 with autocast(enabled=hps.train.bf16_run, dtype=torch.bfloat16):
-                    loss_slm = wl.discriminator(
-                        y.detach().squeeze(1), y_hat.detach().squeeze(1)
-                    ).mean()
+                    loss_slm = wl.discriminator(y.detach().squeeze(1), y_hat.detach().squeeze(1)).mean() / gradient_accumulation_steps
 
-                optim_wd.zero_grad()
-                scaler.scale(loss_slm).backward()
-                scaler.unscale_(optim_wd)
-                # torch.nn.utils.clip_grad_norm_(parameters=net_wd.parameters(), max_norm=200)
-                grad_norm_wd = commons.clip_grad_value_(net_wd.parameters(), None)
-                scaler.step(optim_wd)
+            # Backward pass for discriminators
+            if not is_accumulating:
+                optim_d.zero_grad()
+                if net_dur_disc is not None:
+                    optim_dur_disc.zero_grad()
+                if net_wd is not None:
+                    optim_wd.zero_grad()
 
-        optim_d.zero_grad()
-        scaler.scale(loss_disc_all).backward()
-        scaler.unscale_(optim_d)
-        if getattr(hps.train, "bf16_run", False):
-            torch.nn.utils.clip_grad_norm_(parameters=net_d.parameters(), max_norm=200)
-        grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
-        scaler.step(optim_d)
+            scaler.scale(loss_disc_all).backward(retain_graph=True)
+            if net_dur_disc is not None:
+                scaler.scale(loss_dur_disc_all).backward(retain_graph=True)
+            if net_wd is not None:
+                scaler.scale(loss_slm).backward(retain_graph=True)
 
-        with autocast(enabled=hps.train.bf16_run, dtype=torch.bfloat16):
+            if not is_accumulating:
+                scaler.unscale_(optim_d)
+                grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
+                scaler.step(optim_d)
+                scheduler_d.step()
+
+                if net_dur_disc is not None:
+                    scaler.unscale_(optim_dur_disc)
+                    grad_norm_dur = commons.clip_grad_value_(net_dur_disc.parameters(), None)
+                    scaler.step(optim_dur_disc)
+                    scheduler_dur_disc.step()
+
+                if net_wd is not None:
+                    scaler.unscale_(optim_wd)
+                    grad_norm_wd = commons.clip_grad_value_(net_wd.parameters(), None)
+                    scaler.step(optim_wd)
+                    scheduler_wd.step()
+
             # Generator
-            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
-            if net_dur_disc is not None:
-                _, y_dur_hat_g = net_dur_disc(hidden_x, x_mask, logw_, logw, g)
-            if net_wd is not None:
-                loss_lm = wl(y.detach().squeeze(1), y_hat.squeeze(1)).mean()
-                loss_lm_gen = wl.generator(y_hat.squeeze(1))
             with autocast(enabled=hps.train.bf16_run, dtype=torch.bfloat16):
+                y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
+                if net_dur_disc is not None:
+                    _, y_dur_hat_g = net_dur_disc(hidden_x, x_mask, logw_, logw, g)
+                if net_wd is not None:
+                    loss_lm = wl(y.detach().squeeze(1), y_hat.squeeze(1)).mean()
+                    loss_lm_gen = wl.generator(y_hat.squeeze(1))
+
                 loss_dur = torch.sum(l_length.float())
                 loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
                 loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                # loss_commit = loss_commit * hps.train.c_commit
 
-                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl
+                loss_gen_all = (loss_gen + loss_fm + loss_mel + loss_dur + loss_kl) / gradient_accumulation_steps
+
                 if net_dur_disc is not None:
                     loss_dur_gen, losses_dur_gen = generator_loss(y_dur_hat_g)
-                    if net_wd is not None:
-                        loss_gen_all += loss_dur_gen + loss_lm + loss_lm_gen
-                    else:
-                        loss_gen_all += loss_dur_gen
-        optim_g.zero_grad()
-        scaler.scale(loss_gen_all).backward()
-        scaler.unscale_(optim_g)
-        # if getattr(hps.train, "bf16_run", False):
-        torch.nn.utils.clip_grad_norm_(parameters=net_g.parameters(), max_norm=500)
-        grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
-        scaler.step(optim_g)
-        scaler.update()
+                    loss_gen_all += loss_dur_gen / gradient_accumulation_steps
 
-        if rank == 0:
+                if net_wd is not None:
+                    loss_gen_all += (loss_lm + loss_lm_gen) / gradient_accumulation_steps
+
+            # Backward pass for generator
+            if not is_accumulating:
+                optim_g.zero_grad()
+
+            scaler.scale(loss_gen_all).backward()
+
+            if not is_accumulating:
+                scaler.unscale_(optim_g)
+                grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
+                scaler.step(optim_g)
+                scheduler_g.step()
+                scaler.update()
+
+        if rank == 0 and not is_accumulating:
             if global_step % hps.train.log_interval == 0 and not hps.speedup:
                 lr = optim_g.param_groups[0]["lr"]
                 losses = [loss_disc, loss_gen, loss_fm, loss_mel, loss_dur, loss_kl]
@@ -881,12 +889,26 @@ def train_and_evaluate(
                     "grad_norm_d": grad_norm_d,
                     "grad_norm_g": grad_norm_g,
                 }
+
+                if net_dur_disc is not None and grad_norm_dur is not None:
+                    scalar_dict["grad_norm_dur"] = grad_norm_dur
+
+                if net_wd is not None and grad_norm_wd is not None:
+                    scalar_dict["grad_norm_wd"] = grad_norm_wd
+
+                # Ensure all values are not None
+                scalar_dict = {k: v for k, v in scalar_dict.items() if v is not None}
+
+                # Convert tensor values to Python scalars
+                scalar_dict = {k: v.item() if isinstance(v, torch.Tensor) else v for k, v in scalar_dict.items()}
+
                 scalar_dict.update(
                     {
                         "loss/g/fm": loss_fm,
                         "loss/g/mel": loss_mel,
                         "loss/g/dur": loss_dur,
                         "loss/g/kl": loss_kl,
+                        "loss/d/total": loss_disc_all,
                     }
                 )
                 scalar_dict.update({f"loss/g/{i}": v for i, v in enumerate(losses_gen)})
@@ -928,24 +950,24 @@ def train_and_evaluate(
                         }
                     )
                 # 以降のログは計算が重い気がするし誰も見てない気がするのでコメントアウト
-                # image_dict = {
-                #     "slice/mel_org": utils.plot_spectrogram_to_numpy(
-                #         y_mel[0].data.cpu().numpy()
-                #     ),
-                #     "slice/mel_gen": utils.plot_spectrogram_to_numpy(
-                #         y_hat_mel[0].data.cpu().numpy()
-                #     ),
-                #     "all/mel": utils.plot_spectrogram_to_numpy(
-                #         mel[0].data.cpu().numpy()
-                #     ),
-                #     "all/attn": utils.plot_alignment_to_numpy(
-                #         attn[0, 0].data.cpu().numpy()
-                #     ),
-                # }
+                image_dict = {
+                    "slice/mel_org": utils.plot_spectrogram_to_numpy(
+                        y_mel[0].data.cpu().numpy()
+                    ),
+                    "slice/mel_gen": utils.plot_spectrogram_to_numpy(
+                        y_hat_mel[0].data.cpu().numpy()
+                    ),
+                    "all/mel": utils.plot_spectrogram_to_numpy(
+                        mel[0].data.cpu().numpy()
+                    ),
+                    "all/attn": utils.plot_alignment_to_numpy(
+                        attn[0, 0].data.cpu().numpy()
+                    ),
+                }
                 utils.summarize(
                     writer=writer,
                     global_step=global_step,
-                    # images=image_dict,
+                    images=image_dict,
                     scalars=scalar_dict,
                 )
 
@@ -1019,12 +1041,13 @@ def train_and_evaluate(
                         run_as_future=True,
                     )
 
-        global_step += 1
-        if pbar is not None:
-            pbar.set_description(
-                f"Epoch {epoch}({100.0 * batch_idx / len(train_loader):.0f}%)/{hps.train.epochs}"
-            )
-            pbar.update()
+        if not is_accumulating:
+            global_step += 1
+            if pbar is not None:
+                pbar.set_description(
+                    f"Epoch {epoch}({100.0 * batch_idx / len(train_loader):.0f}%)/{hps.train.epochs}"
+                )
+                pbar.update()
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -1075,38 +1098,38 @@ def evaluate(hps, generator, eval_loader, writer_eval):
                 )
                 y_hat_lengths = mask.sum([1, 2]).long() * hps.data.hop_length
                 # 以降のログは計算が重い気がするし誰も見てない気がするのでコメントアウト
-                # mel = spec_to_mel_torch(
-                #     spec,
-                #     hps.data.filter_length,
-                #     hps.data.n_mel_channels,
-                #     hps.data.sampling_rate,
-                #     hps.data.mel_fmin,
-                #     hps.data.mel_fmax,
-                # )
-                # y_hat_mel = mel_spectrogram_torch(
-                #     y_hat.squeeze(1).float(),
-                #     hps.data.filter_length,
-                #     hps.data.n_mel_channels,
-                #     hps.data.sampling_rate,
-                #     hps.data.hop_length,
-                #     hps.data.win_length,
-                #     hps.data.mel_fmin,
-                #     hps.data.mel_fmax,
-                # )
-                # image_dict.update(
-                #     {
-                #         f"gen/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(
-                #             y_hat_mel[0].cpu().numpy()
-                #         )
-                #     }
-                # )
-                # image_dict.update(
-                #     {
-                #         f"gt/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(
-                #             mel[0].cpu().numpy()
-                #         )
-                #     }
-                # )
+                mel = spec_to_mel_torch(
+                    spec,
+                    hps.data.filter_length,
+                    hps.data.n_mel_channels,
+                    hps.data.sampling_rate,
+                    hps.data.mel_fmin,
+                    hps.data.mel_fmax,
+                )
+                y_hat_mel = mel_spectrogram_torch(
+                    y_hat.squeeze(1).float(),
+                    hps.data.filter_length,
+                    hps.data.n_mel_channels,
+                    hps.data.sampling_rate,
+                    hps.data.hop_length,
+                    hps.data.win_length,
+                    hps.data.mel_fmin,
+                    hps.data.mel_fmax,
+                )
+                image_dict.update(
+                    {
+                        f"gen/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(
+                            y_hat_mel[0].cpu().numpy()
+                        )
+                    }
+                )
+                image_dict.update(
+                    {
+                        f"gt/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(
+                            mel[0].cpu().numpy()
+                        )
+                    }
+                )
                 audio_dict.update(
                     {
                         f"gen/audio_{batch_idx}_{use_sdp}": y_hat[
