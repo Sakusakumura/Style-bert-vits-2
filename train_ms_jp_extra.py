@@ -4,6 +4,7 @@ import gc
 import os
 import platform
 
+import pyopenjtalk
 import torch
 import torch.distributed as dist
 from huggingface_hub import HfApi
@@ -1150,4 +1151,8 @@ def evaluate(hps, generator, eval_loader, writer_eval):
 
 
 if __name__ == "__main__":
+    try:
+        pyopenjtalk.update_global_jtalk_with_user_dict("user.dic")
+    except:
+        pass
     run()
