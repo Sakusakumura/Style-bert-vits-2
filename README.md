@@ -20,8 +20,8 @@
    
 ### 5. スケジューラをExponentialLRからCosineAnnealingLRに変更
    経験則上こちらの方が上手く学習できることが多い  
-   <img src="https://github.com/user-attachments/assets/f4f7d289-1ae2-4c54-8f96-73917abe14e9" style="width: 50%;"><img src="https://github.com/user-attachments/assets/660479dc-94b8-43d2-94b5-52b2c9843ef0" style="width: 50%;">
-
+   <img src="https://github.com/user-attachments/assets/f4f7d289-1ae2-4c54-8f96-73917abe14e9" style="width: 50%;"><img src="https://github.com/user-attachments/assets/8e41cd68-24ce-4626-b570-75bd77df866b" style="width: 50%;">
+   
 ### 6. (train_ms_jp_extra.py) openpyjtalkに辞書追加できるように
    読み間違いがこれで解決できるはず
 
