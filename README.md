@@ -27,6 +27,37 @@
 
 ----
 
+ENGLISH version
+
+Fork from [litagin02/Style-Bert-VITS2](https://github.com/litagin02/Style-Bert-VITS2/blob/master/configs/config_jp_extra.json)  
+Refactored for readability, added multi-GPU support, and various learning-related improvements  
+Too many changes to send a PR... (´・ω・`)
+
+## Differences from litagin's Style-Bert-VITS2
+
+### 1. Major refactoring of train_ms_jp_extra.py
+   (Changes are too significant to submit a pull request to the original repository)
+
+### 2. Full implementation of DDP (Distributed Data Parallel)
+
+### 3. Added Gradient Accumulation Steps
+   Allows training with larger batch sizes using less VRAM by splitting batches into multiple steps  
+   Explanation: [Accumulate Gradients and You Are Good To Go](https://medium.com/@harshit158/gradient-accumulation-307de7599e87)  
+   Note: Set the `gradient_accumulation_steps` parameter directly in train_ms_jp_extra.py.
+
+### 4. Added functionality to save/apply scheduler state dict
+   Learning rate no longer resets when interrupting and resuming training (probably)
+
+### 5. Changed scheduler from ExponentialLR to CosineAnnealingLR
+   Empirically, this often leads to better training results  
+   <img src="https://github.com/user-attachments/assets/f4f7d289-1ae2-4c54-8f96-73917abe14e9" style="width: 50%;"><img src="https://github.com/user-attachments/assets/815978c1-c0e6-475e-b6db-4bcaf5c101a1" style="width: 50%;">
+
+### 6. (train_ms_jp_extra.py) Enabled dictionary addition to openpyjtalk
+   This should resolve pronunciation mistakes in Japanese
+
+----
+Below is the original README.
+
 # Style-Bert-VITS2
 
 **利用の際は必ず[お願いとデフォルトモデルの利用規約](/docs/TERMS_OF_USE.md)をお読みください。**
