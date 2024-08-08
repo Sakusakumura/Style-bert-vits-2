@@ -20,7 +20,7 @@
    
 ### 5. スケジューラをExponentialLRからCosineAnnealingLRに変更
    経験則上こちらの方が上手く学習できることが多い  
-   <img src="https://github.com/user-attachments/assets/f4f7d289-1ae2-4c54-8f96-73917abe14e9" style="width: 50%;"><img src="https://github.com/user-attachments/assets/815978c1-c0e6-475e-b6db-4bcaf5c101a1" style="width: 50%;">
+   <img src="https://github.com/user-attachments/assets/f4f7d289-1ae2-4c54-8f96-73917abe14e9" style="width: 50%;"><img src="https://github.com/user-attachments/assets/660479dc-94b8-43d2-94b5-52b2c9843ef0" style="width: 50%;">
 
 ### 6. (train_ms_jp_extra.py) openpyjtalkに辞書追加できるように
    読み間違いがこれで解決できるはず
@@ -39,6 +39,7 @@ Too many changes to send a PR... (´・ω・`)
    (Changes are too significant to submit a pull request to the original repository)
 
 ### 2. Full implementation of DDP (Distributed Data Parallel)
+
 
 ### 3. Added Gradient Accumulation Steps
    Allows training with larger batch sizes using less VRAM by splitting batches into multiple steps  
