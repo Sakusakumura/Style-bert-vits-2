@@ -1,3 +1,32 @@
+[litagin02/Style-Bert-VITS2](https://github.com/litagin02/Style-Bert-VITS2/blob/master/configs/config_jp_extra.json)からのFork  
+読みやすいようにリファクタリングとか、マルチGPUとか、学習関連色々手を加えたやつ  
+変更が大きすぎるのでPRは送れない・・・(´・ω・`)
+
+## litaginさんのStyle-Bert-VITS2との違い
+
+### 1. train_ms_jp_extra.pyの大規模なリファクタリング  
+   （変更が大きいため本家にプルリク送れないです）
+   
+### 2. DDP(Distributed Data Parallel)の完全な実装
+   複数GPUでバッチを分割して正しくトレーニングができます
+   
+### 3. Gradient Accumulation Stepsの追加
+   バッチを複数ステップに分けて学習することで、少ないVRAM使用量でより大きなバッチサイズに対応します  
+   解説：[Accumulate Gradients and You Are Good To Go](https://medium.com/@harshit158/gradient-accumulation-307de7599e87)  
+   ※train_ms_jp_extra.py内で直接指定する必要があります
+   
+### 4. スケジューラの状態の保存/適用機能の追加
+   学習を中断、再開しても学習率がリセットされないようになりました（多分
+   
+### 5. スケジューラをExponentialLRからCosineAnnealingLRに変更
+   経験則上こちらの方が上手く学習できることが多い  
+   <img src="https://github.com/user-attachments/assets/f4f7d289-1ae2-4c54-8f96-73917abe14e9" style="width: 50%;"><img src="https://github.com/user-attachments/assets/815978c1-c0e6-475e-b6db-4bcaf5c101a1" style="width: 50%;">
+
+### 6. (train_ms_jp_extra.py) openpyjtalkに辞書追加できるように
+   読み間違いがこれで解決できるはず
+
+----
+
 # Style-Bert-VITS2
 
 **利用の際は必ず[お願いとデフォルトモデルの利用規約](/docs/TERMS_OF_USE.md)をお読みください。**
