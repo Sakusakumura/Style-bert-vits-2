@@ -6,6 +6,7 @@ from typing import Any, Optional, Union
 
 import torch
 
+from schedulers import WarmupCosineLR
 from style_bert_vits2.logging import logger
 
 
@@ -13,29 +14,32 @@ def load_checkpoint(
     checkpoint_path: Union[str, Path],
     model: torch.nn.Module,
     optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler: Optional[WarmupCosineLR] = None,
     skip_optimizer: bool = False,
     for_infer: bool = False,
-) -> tuple[torch.nn.Module, Optional[torch.optim.Optimizer], float, int]:
+    last_steps: int = 0
+) -> tuple[torch.nn.Module, Optional[torch.optim.Optimizer], Optional[WarmupCosineLR], float, int]:
     """
-    指定されたパスからチェックポイントを読み込み、モデルとオプティマイザーを更新する。
+    指定されたパスからチェックポイントを読み込み、モデル、オプティマイザー、スケジューラを更新する。
 
     Args:
         checkpoint_path (Union[str, Path]): チェックポイントファイルのパス
         model (torch.nn.Module): 更新するモデル
         optimizer (Optional[torch.optim.Optimizer]): 更新するオプティマイザー。None の場合は更新しない
-        skip_optimizer (bool): オプティマイザーの更新をスキップするかどうかのフラグ
+        scheduler (Optional[torch.optim.lr_scheduler._LRScheduler]): 更新するスケジューラ。None の場合は更新しない
+        skip_optimizer (bool): オプティマイザーとスケジューラの更新をスキップするかどうかのフラグ
         for_infer (bool): 推論用に読み込むかどうかのフラグ
 
     Returns:
-        tuple[torch.nn.Module, Optional[torch.optim.Optimizer], float, int]: 更新されたモデルとオプティマイザー、学習率、イテレーション回数
+        tuple[torch.nn.Module, Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler._LRScheduler], float, int]:
+            更新されたモデル、オプティマイザー、スケジューラ、学習率、イテレーション回数
     """
-
     assert os.path.isfile(checkpoint_path)
     checkpoint_dict = torch.load(checkpoint_path, map_location="cpu")
     iteration = checkpoint_dict["iteration"]
     learning_rate = checkpoint_dict["learning_rate"]
     logger.info(
-        f"Loading model and optimizer at iteration {iteration} from {checkpoint_path}"
+        f"Loading model, optimizer, and scheduler at iteration {iteration} from {checkpoint_path}"
     )
     if (
         optimizer is not None
@@ -50,6 +54,10 @@ def load_checkpoint(
         new_opt_dict["param_groups"] = checkpoint_dict["optimizer"]["param_groups"]
         new_opt_dict["param_groups"][0]["params"] = new_opt_dict_params
         optimizer.load_state_dict(new_opt_dict)  # type: ignore
+
+    if not skip_optimizer and "scheduler" in checkpoint_dict:
+        scheduler.last_epoch = last_steps
+        scheduler.load_state_dict(checkpoint_dict["scheduler"])
 
     saved_state_dict = checkpoint_dict["model"]
     if hasattr(model, "module"):
@@ -87,42 +95,47 @@ def load_checkpoint(
 
     logger.info(f"Loaded '{checkpoint_path}' (iteration {iteration})")
 
-    return model, optimizer, learning_rate, iteration
+    return model, optimizer, scheduler, learning_rate, iteration
 
 
 def save_checkpoint(
     model: torch.nn.Module,
     optimizer: Union[torch.optim.Optimizer, torch.optim.AdamW],
+    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
     learning_rate: float,
     iteration: int,
     checkpoint_path: Union[str, Path],
 ) -> None:
     """
-    モデルとオプティマイザーの状態を指定されたパスに保存する。
+    モデル、オプティマイザー、スケジューラの状態を指定されたパスに保存する。
 
     Args:
         model (torch.nn.Module): 保存するモデル
         optimizer (Union[torch.optim.Optimizer, torch.optim.AdamW]): 保存するオプティマイザー
+        scheduler (Optional[torch.optim.lr_scheduler._LRScheduler]): 保存するスケジューラ（オプション）
         learning_rate (float): 学習率
         iteration (int): イテレーション回数
         checkpoint_path (Union[str, Path]): 保存先のパス
     """
     logger.info(
-        f"Saving model and optimizer state at iteration {iteration} to {checkpoint_path}"
+        f"Saving model, optimizer, and scheduler state at iteration {iteration} to {checkpoint_path}"
     )
     if hasattr(model, "module"):
         state_dict = model.module.state_dict()
     else:
         state_dict = model.state_dict()
-    torch.save(
-        {
-            "model": state_dict,
-            "iteration": iteration,
-            "optimizer": optimizer.state_dict(),
-            "learning_rate": learning_rate,
-        },
-        checkpoint_path,
-    )
+
+    checkpoint = {
+        "model": state_dict,
+        "iteration": iteration,
+        "optimizer": optimizer.state_dict(),
+        "learning_rate": learning_rate,
+    }
+
+    if scheduler is not None:
+        checkpoint["scheduler"] = scheduler.state_dict()
+
+    torch.save(checkpoint, checkpoint_path)
 
 
 def clean_checkpoints(

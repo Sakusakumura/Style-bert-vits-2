@@ -1,6 +1,7 @@
 import argparse
 import datetime
 import gc
+import math
 import os
 import platform
 
@@ -25,6 +26,7 @@ from data_utils import (
 )
 from losses import WavLMLoss, discriminator_loss, feature_loss, generator_loss, kl_loss
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
+from schedulers import WarmupCosineLR
 from style_bert_vits2.logging import logger
 from style_bert_vits2.models import commons, utils
 from style_bert_vits2.models.hyper_parameters import HyperParameters
@@ -349,6 +351,11 @@ def run():
         for param in net_g.dec.parameters():
             param.requires_grad = False
 
+    total_steps = hps.train.epochs * len(train_loader)
+    warmup_steps = hps.train.warmup_epochs * len(train_loader)
+
+    logger.info(f"total steps: {total_steps}, warmup steps: {warmup_steps}")
+
     net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(local_rank)
     optim_g = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, net_g.parameters()),
@@ -356,11 +363,17 @@ def run():
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
+    scheduler_g = WarmupCosineLR(
+        optim_g, warmup_steps, total_steps
+    )
     optim_d = torch.optim.AdamW(
         net_d.parameters(),
         hps.train.learning_rate,
         betas=hps.train.betas,
         eps=hps.train.eps,
+    )
+    scheduler_d = WarmupCosineLR(
+        optim_d, warmup_steps, total_steps
     )
     if net_dur_disc is not None:
         optim_dur_disc = torch.optim.AdamW(
@@ -369,8 +382,12 @@ def run():
             betas=hps.train.betas,
             eps=hps.train.eps,
         )
+        scheduler_dur_disc = WarmupCosineLR(
+            optim_dur_disc, warmup_steps, total_steps
+        )
     else:
         optim_dur_disc = None
+        scheduler_dur_disc = None
     if net_wd is not None:
         optim_wd = torch.optim.AdamW(
             net_wd.parameters(),
@@ -378,8 +395,19 @@ def run():
             betas=hps.train.betas,
             eps=hps.train.eps,
         )
+        scheduler_wd = WarmupCosineLR(
+            optim_wd, warmup_steps, total_steps
+        )
+        wl = WavLMLoss(
+            hps.model.slm.model,
+            net_wd,
+            hps.data.sampling_rate,
+            hps.model.slm.sr,
+        ).to(local_rank)
     else:
         optim_wd = None
+        scheduler_wd = None
+        wl = None
     net_g = DDP(
         net_g,
         device_ids=[local_rank],
@@ -404,53 +432,70 @@ def run():
         )
 
     if utils.is_resuming(model_dir):
+        try:
+            # global_step = (epoch_str - 1) * len(train_loader)
+            global_step = int(
+                utils.get_steps(
+                    utils.checkpoints.get_latest_checkpoint_path(model_dir, "G_*.pth")
+                )
+            )
+        except:
+            global_step = 0
         if net_dur_disc is not None:
             try:
-                _, _, dur_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
+                _, _, _, dur_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
                     utils.checkpoints.get_latest_checkpoint_path(
                         model_dir, "DUR_*.pth"
                     ),
                     net_dur_disc,
                     optim_dur_disc,
+                    scheduler_dur_disc,
                     skip_optimizer=hps.train.skip_optimizer,
+                    last_steps=global_step,
                 )
                 if not optim_dur_disc.param_groups[0].get("initial_lr"):
                     optim_dur_disc.param_groups[0]["initial_lr"] = dur_resume_lr
             except:
                 if not optim_dur_disc.param_groups[0].get("initial_lr"):
-                    optim_dur_disc.param_groups[0]["initial_lr"] = dur_resume_lr
+                    optim_dur_disc.param_groups[0]["initial_lr"] = hps.train.learning_rate
                 print("Initialize dur_disc")
         if net_wd is not None:
             try:
-                _, optim_wd, wd_resume_lr, epoch_str = (
+                _, optim_wd, scheduler_wd, wd_resume_lr, epoch_str = (
                     utils.checkpoints.load_checkpoint(
                         utils.checkpoints.get_latest_checkpoint_path(
                             model_dir, "WD_*.pth"
                         ),
                         net_wd,
                         optim_wd,
+                        scheduler_wd,
                         skip_optimizer=hps.train.skip_optimizer,
+                        last_steps=global_step,
                     )
                 )
                 if not optim_wd.param_groups[0].get("initial_lr"):
                     optim_wd.param_groups[0]["initial_lr"] = wd_resume_lr
             except:
                 if not optim_wd.param_groups[0].get("initial_lr"):
-                    optim_wd.param_groups[0]["initial_lr"] = wd_resume_lr
+                    optim_wd.param_groups[0]["initial_lr"] = hps.train.learning_rate
                 logger.info("Initialize wavlm")
 
         try:
-            _, optim_g, g_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
+            _, optim_g, scheduler_g, g_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
                 utils.checkpoints.get_latest_checkpoint_path(model_dir, "G_*.pth"),
                 net_g,
                 optim_g,
+                scheduler_g,
                 skip_optimizer=hps.train.skip_optimizer,
+                last_steps=global_step,
             )
-            _, optim_d, d_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
+            _, optim_d, scheduler_d, d_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
                 utils.checkpoints.get_latest_checkpoint_path(model_dir, "D_*.pth"),
                 net_d,
                 optim_d,
+                scheduler_d,
                 skip_optimizer=hps.train.skip_optimizer,
+                last_steps=global_step,
             )
             if not optim_g.param_groups[0].get("initial_lr"):
                 optim_g.param_groups[0]["initial_lr"] = g_resume_lr
@@ -458,12 +503,6 @@ def run():
                 optim_d.param_groups[0]["initial_lr"] = d_resume_lr
 
             epoch_str = max(epoch_str, 1)
-            # global_step = (epoch_str - 1) * len(train_loader)
-            global_step = int(
-                utils.get_steps(
-                    utils.checkpoints.get_latest_checkpoint_path(model_dir, "G_*.pth")
-                )
-            )
             logger.info(
                 f"******************Found the model. Current epoch is {epoch_str}, gloabl step is {global_step}*********************"
             )
@@ -473,7 +512,6 @@ def run():
                 "It seems that you are not using the pretrained models, so we will train from scratch."
             )
             epoch_str = 1
-            global_step = 0
     else:
         try:
             _ = utils.safetensors.load_safetensors(
@@ -500,54 +538,21 @@ def run():
             epoch_str = 1
             global_step = 0
 
-    def lr_lambda(epoch):
-        """
-        Learning rate scheduler for warmup and exponential decay.
-        - During the warmup period, the learning rate increases linearly.
-        - After the warmup period, the learning rate decreases exponentially.
-        """
-        if epoch < hps.train.warmup_epochs:
-            return float(epoch) / float(max(1, hps.train.warmup_epochs))
-        else:
-            return hps.train.lr_decay ** (epoch - hps.train.warmup_epochs)
-
-    scheduler_last_epoch = epoch_str - 2
-    scheduler_g = torch.optim.lr_scheduler.LambdaLR(
-        optim_g, lr_lambda=lr_lambda, last_epoch=scheduler_last_epoch
-    )
-    scheduler_d = torch.optim.lr_scheduler.LambdaLR(
-        optim_d, lr_lambda=lr_lambda, last_epoch=scheduler_last_epoch
-    )
-    if net_dur_disc is not None:
-        scheduler_dur_disc = torch.optim.lr_scheduler.LambdaLR(
-            optim_dur_disc, lr_lambda=lr_lambda, last_epoch=scheduler_last_epoch
-        )
-    else:
-        scheduler_dur_disc = None
-    if net_wd is not None:
-        scheduler_wd = torch.optim.lr_scheduler.LambdaLR(
-            optim_wd, lr_lambda=lr_lambda, last_epoch=scheduler_last_epoch
-        )
-        wl = WavLMLoss(
-            hps.model.slm.model,
-            net_wd,
-            hps.data.sampling_rate,
-            hps.model.slm.sr,
-        ).to(local_rank)
-    else:
-        scheduler_wd = None
-        wl = None
     scaler = GradScaler(enabled=hps.train.bf16_run)
     logger.info("Start training.")
 
     # add: gradient_accumulation_steps
-    gradient_accumulation_steps = 3
+    gradient_accumulation_steps = 1
 
+    # train_loaderの長さをGPUの数で割る
+    loader_length = len(train_loader)
+
+    # diffの計算を修正
     diff = abs(
-        epoch_str * len(train_loader) - (hps.train.epochs + 1) * len(train_loader)
+        epoch_str * loader_length - (hps.train.epochs + 1) * loader_length
     )
     pbar = None
-    if not args.no_progress_bar:
+    if not args.no_progress_bar and rank == 0:
         pbar = tqdm(
             total=(global_step + diff) // gradient_accumulation_steps,
             initial=global_step,
@@ -556,7 +561,15 @@ def run():
         )
     initial_step = global_step
 
+    for i, scheduler in enumerate([scheduler_g, scheduler_d, scheduler_dur_disc, scheduler_wd]):
+        if scheduler:
+            scheduler.step()
+            logger.info(f"Scheduler LR multipliers: {i} -> {scheduler.get_lr()}")
+            logger.info(f"Scheduler last epochs: {i} -> {scheduler.last_epoch}")
+
     for epoch in range(epoch_str, hps.train.epochs + 1):
+        if not args.not_use_custom_batch_sampler:
+            train_sampler.set_epoch(epoch)
         if rank == 0:
             train_and_evaluate(
                 rank,
@@ -811,6 +824,17 @@ def train_and_evaluate(
                 if net_wd is not None:
                     optim_wd.zero_grad()
 
+            # ここに勾配の同期と集約を追加
+            if dist.get_world_size() > 1:
+                dist.all_reduce(loss_disc_all, op=dist.ReduceOp.SUM)
+                loss_disc_all = loss_disc_all / dist.get_world_size()
+                if net_dur_disc is not None:
+                    dist.all_reduce(loss_dur_disc_all, op=dist.ReduceOp.SUM)
+                    loss_dur_disc_all = loss_dur_disc_all / dist.get_world_size()
+                if net_wd is not None:
+                    dist.all_reduce(loss_slm, op=dist.ReduceOp.SUM)
+                    loss_slm = loss_slm / dist.get_world_size()
+
             scaler.scale(loss_disc_all).backward(retain_graph=True)
             if net_dur_disc is not None:
                 scaler.scale(loss_dur_disc_all).backward(retain_graph=True)
@@ -862,6 +886,11 @@ def train_and_evaluate(
             # Backward pass for generator
             if not is_accumulating:
                 optim_g.zero_grad()
+
+                # ここに勾配の同期と集約を追加
+                if dist.get_world_size() > 1:
+                    dist.all_reduce(loss_gen_all, op=dist.ReduceOp.SUM)
+                    loss_gen_all = loss_gen_all / dist.get_world_size()
 
             scaler.scale(loss_gen_all).backward()
 
@@ -976,6 +1005,7 @@ def train_and_evaluate(
                 global_step % hps.train.eval_interval == 0
                 and global_step != 0
                 and initial_step != global_step
+                and rank == 0
             ):
                 if not hps.speedup:
                     evaluate(hps, net_g, eval_loader, writer_eval)
@@ -1044,11 +1074,13 @@ def train_and_evaluate(
 
         if not is_accumulating:
             global_step += 1
-            if pbar is not None:
+            if pbar is not None and rank == 0:
                 pbar.set_description(
                     f"Epoch {epoch}({100.0 * batch_idx / len(train_loader):.0f}%)/{hps.train.epochs}"
                 )
                 pbar.update()
+
+    dist.barrier(group=dist.group.WORLD)
 
     gc.collect()
     torch.cuda.empty_cache()
