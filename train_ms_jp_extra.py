@@ -1012,6 +1012,7 @@ def train_and_evaluate(
                 utils.checkpoints.save_checkpoint(
                     net_g,
                     optim_g,
+                    scheduler_g,
                     hps.train.learning_rate,
                     epoch,
                     os.path.join(hps.model_dir, f"G_{global_step}.pth"),
@@ -1019,6 +1020,7 @@ def train_and_evaluate(
                 utils.checkpoints.save_checkpoint(
                     net_d,
                     optim_d,
+                    scheduler_d,
                     hps.train.learning_rate,
                     epoch,
                     os.path.join(hps.model_dir, f"D_{global_step}.pth"),
@@ -1027,6 +1029,7 @@ def train_and_evaluate(
                     utils.checkpoints.save_checkpoint(
                         net_dur_disc,
                         optim_dur_disc,
+                        scheduler_dur_disc,
                         hps.train.learning_rate,
                         epoch,
                         os.path.join(hps.model_dir, f"DUR_{global_step}.pth"),
@@ -1035,6 +1038,7 @@ def train_and_evaluate(
                     utils.checkpoints.save_checkpoint(
                         net_wd,
                         optim_wd,
+                        scheduler_wd,
                         hps.train.learning_rate,
                         epoch,
                         os.path.join(hps.model_dir, f"WD_{global_step}.pth"),
@@ -1072,9 +1076,9 @@ def train_and_evaluate(
                         run_as_future=True,
                     )
 
-        if not is_accumulating:
+        if not is_accumulating and rank == 0:
             global_step += 1
-            if pbar is not None and rank == 0:
+            if pbar is not None:
                 pbar.set_description(
                     f"Epoch {epoch}({100.0 * batch_idx / len(train_loader):.0f}%)/{hps.train.epochs}"
                 )
