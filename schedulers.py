@@ -2,7 +2,7 @@ import math
 from torch.optim.lr_scheduler import LambdaLR
 
 class WarmupCosineLR(LambdaLR):
-    def __init__(self, optimizer, warmup_epochs, total_epochs, last_epoch=-1, alpha=0.5):
+    def __init__(self, optimizer, warmup_epochs, total_epochs, last_epoch=-1, alpha=1):
         self.warmup_epochs = warmup_epochs
         self.total_epochs = total_epochs
         self.alpha = alpha

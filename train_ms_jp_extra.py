@@ -451,7 +451,6 @@ def run():
                     optim_dur_disc,
                     scheduler_dur_disc,
                     skip_optimizer=hps.train.skip_optimizer,
-                    last_steps=global_step,
                 )
                 if not optim_dur_disc.param_groups[0].get("initial_lr"):
                     optim_dur_disc.param_groups[0]["initial_lr"] = dur_resume_lr
@@ -470,7 +469,6 @@ def run():
                         optim_wd,
                         scheduler_wd,
                         skip_optimizer=hps.train.skip_optimizer,
-                        last_steps=global_step,
                     )
                 )
                 if not optim_wd.param_groups[0].get("initial_lr"):
@@ -487,7 +485,6 @@ def run():
                 optim_g,
                 scheduler_g,
                 skip_optimizer=hps.train.skip_optimizer,
-                last_steps=global_step,
             )
             _, optim_d, scheduler_d, d_resume_lr, epoch_str = utils.checkpoints.load_checkpoint(
                 utils.checkpoints.get_latest_checkpoint_path(model_dir, "D_*.pth"),
@@ -495,7 +492,6 @@ def run():
                 optim_d,
                 scheduler_d,
                 skip_optimizer=hps.train.skip_optimizer,
-                last_steps=global_step,
             )
             if not optim_g.param_groups[0].get("initial_lr"):
                 optim_g.param_groups[0]["initial_lr"] = g_resume_lr

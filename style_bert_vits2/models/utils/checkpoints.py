@@ -16,8 +16,7 @@ def load_checkpoint(
     optimizer: Optional[torch.optim.Optimizer] = None,
     scheduler: Optional[WarmupCosineLR] = None,
     skip_optimizer: bool = False,
-    for_infer: bool = False,
-    last_steps: int = 0
+    for_infer: bool = False
 ) -> tuple[torch.nn.Module, Optional[torch.optim.Optimizer], Optional[WarmupCosineLR], float, int]:
     """
     指定されたパスからチェックポイントを読み込み、モデル、オプティマイザー、スケジューラを更新する。
@@ -55,8 +54,8 @@ def load_checkpoint(
         new_opt_dict["param_groups"][0]["params"] = new_opt_dict_params
         optimizer.load_state_dict(new_opt_dict)  # type: ignore
 
-    if not skip_optimizer and "scheduler" in checkpoint_dict:
-        scheduler.last_epoch = last_steps
+    if scheduler is not None and not skip_optimizer and "scheduler" in checkpoint_dict:
+        scheduler.last_epoch = checkpoint_dict["scheduler"]["last_epoch"] - 1
         scheduler.load_state_dict(checkpoint_dict["scheduler"])
 
     saved_state_dict = checkpoint_dict["model"]
