@@ -8,6 +8,7 @@
    （変更が大きいため本家にプルリク送れないです）
    
 ### 2. DDP(Distributed Data Parallel)の完全な実装
+   GPU間の勾配を収集する部分が無かったので今までは1番目のGPUのみで訓練していました。
    複数GPUでバッチを分割して正しくトレーニングができます
    
 ### 3. Gradient Accumulation Stepsの追加
