@@ -12,7 +12,7 @@
    複数GPUでバッチを分割して正しくトレーニングができます
    
 ### 3. Gradient Accumulation Stepsの追加
-   バッチを複数ステップに分けて学習することで、少ないVRAM使用量でより大きなバッチサイズに対応します  
+   バッチを複数ステップに分けて計算することで、少ないVRAM使用量でより大きなバッチサイズに対応します  
    解説：[Accumulate Gradients and You Are Good To Go](https://medium.com/@harshit158/gradient-accumulation-307de7599e87)  
    ※train_ms_jp_extra.py内で直接指定する必要があります
    
