@@ -7,19 +7,15 @@
 ### 1. train_ms_jp_extra.pyの大規模なリファクタリング  
    （変更が大きいため本家にプルリク送れないです）
    
-### 2. DDP(Distributed Data Parallel)の完全な実装
-   GPU間の勾配の同期と集約をする部分が無かったので今までは1番目のGPUの勾配のみを使用して訓練していました。  
-   複数GPUでバッチを分割して正しくトレーニングができます
-   
-### 3. Gradient Accumulation Stepsの追加
+### 2. Gradient Accumulation Stepsの追加
    バッチを複数ステップに分けて計算することで、少ないVRAM使用量でより大きなバッチサイズに対応します  
    解説：[Accumulate Gradients and You Are Good To Go](https://medium.com/@harshit158/gradient-accumulation-307de7599e87)  
    ※train_ms_jp_extra.py内で直接指定する必要があります
    
-### 4. スケジューラの状態の保存/適用機能の追加
-   学習を中断、再開しても学習率がリセットされないようになりました（多分
+### 3. スケジューラの状態の保存/適用機能の追加
+   学習を中断、再開しても学習率がリセットされないようになりました
    
-### 5. スケジューラをExponentialLRからCosineAnnealingLRに変更
+### 4. スケジューラをExponentialLRからCosineAnnealingLRに変更
    経験則上こちらの方が上手く学習できることが多い  
    <img src="https://github.com/user-attachments/assets/f4f7d289-1ae2-4c54-8f96-73917abe14e9" style="width: 50%;"><img src="https://github.com/user-attachments/assets/8e41cd68-24ce-4626-b570-75bd77df866b" style="width: 50%;">
    
